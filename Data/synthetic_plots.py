@@ -33,8 +33,9 @@ def plot_points(x, y):
     plt.scatter(x2, y2, color=['green'], label='Cluster 2', edgecolors=(0, 0, 0))
     plt.scatter(x3, y3, color=['blue'], label='Cluster 3', edgecolors=(0, 0, 0))
     plt.scatter(x4, y4, color=['orange'], label='Cluster 4', edgecolors=(0, 0, 0))
+    plt.xlabel("h0")
+    plt.ylabel("h1")
     plt.legend()
-    plt.title('Plot of data points')
 
 
 # Assigning cluster no. based on coordinate system
@@ -61,7 +62,7 @@ def sigmoid(z):
     return z_hat
 
 
-def to_higher_dimension(x):
+def to_higher_dimension(x, y):
     """
     transform data from 2-d to 100-d using non-linear transformation
     assume data points to be 2-dimension
@@ -73,24 +74,34 @@ def to_higher_dimension(x):
     W = np.random.normal(loc=0, scale=1, size=(10, 2))
     # U=np.random.normal(loc=0,scale=1,size=(100,10))
     x_new = np.square(sigmoid(np.dot(W, x.T))).T
-    return x_new
+    return x_new, y
 
 
-def to_higher_dimension2(x):
+def to_higher_dimension2(x, y):
     W = np.random.normal(loc=0, scale=1, size=(10, 2))
     # U=np.random.normal(loc=0,scale=1,size=(100,10))
     x_new = np.tanh(sigmoid(np.dot(W, x.T))).T
-    return x_new
+    return x_new, y
+
+
+def to_higher_dimension3(x, y):
+    W = np.random.normal(loc=0, scale=1, size=(10, 2))
+    U = np.random.normal(loc=0, scale=1, size=(100, 10))
+
+    x_new = sigmoid(np.dot(U, sigmoid(np.dot(W, x.T)))).T
+    return x_new, y
 
 
 if __name__ == '__main__':
     x, y = syn_data_points()
     plot_points(x, y)
+    plt.title('Plot of 2 dimensional data points')
     plt.savefig("../data_points_2_dim.png")
     plt.close()
-    x_high = to_higher_dimension2(x)
+    x_high, _ = to_higher_dimension3(x, y)
 
     pca = PCA(n_components=2)
     x_pca = pca.fit_transform(x_high)
     plot_points(x_pca, y)
+    plt.title('Plot of data points after PCA')
     plt.savefig("../data_points_100_dim.png")

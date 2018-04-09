@@ -9,7 +9,7 @@ def syn_data_points(n_samples=10000):
     :return:
     """
     # centers of the clusters
-    centers = [(-5, -5), (5, -5), (-5, 5), (5, 5)]
+    centers = [(5, 5), (-5, 5), (-5, -5), (5, -5)]
 
     x, y = make_blobs(n_samples=n_samples, n_features=2, cluster_std=1.0,
                       centers=centers, shuffle=False, random_state=42)
