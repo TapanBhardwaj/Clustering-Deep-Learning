@@ -1,5 +1,10 @@
+import os
+import pickle
+
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.io as scio
+from keras.datasets import mnist
 from sklearn.decomposition import PCA
 
 from synthetic_data_generation import syn_data_points
@@ -36,6 +41,7 @@ def plot_points(x, y):
     plt.xlabel("h0")
     plt.ylabel("h1")
     plt.legend()
+    plt.show()
 
 
 # Assigning cluster no. based on coordinate system
@@ -84,21 +90,58 @@ def to_higher_dimension2(x, y):
     return x_new, y
 
 
-def to_higher_dimension3(x, y):
+def load_synthetic():
+    x, y = syn_data_points()
     W = np.random.normal(loc=0, scale=1, size=(10, 2))
     U = np.random.normal(loc=0, scale=1, size=(100, 10))
 
     x_new = sigmoid(np.dot(U, sigmoid(np.dot(W, x.T)))).T
-    return x_new, y
+
+    pickle_file_path = '/Users/tapanbhardwaj/Downloads/github_projects/Clustering-Deep-Learning/Data/synthetic_data.pkl'
+
+    if not os.path.isfile(pickle_file_path):
+        with open(pickle_file_path, 'wb') as f:
+            pickle.dump([x_new, y], f)
+
+    with open(pickle_file_path, 'rb') as f:
+        x, y = pickle.load(f)
+
+    print('SYNTHETIC data samples shape : {}'.format(x_new.shape))
+    return x, y
+
+
+def load_mnist():
+    # the data, shuffled and split between train and test sets
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    x = np.concatenate((x_train, x_test))
+    y = np.concatenate((y_train, y_test))
+
+    # converting to (784, ) shape
+    x = x.reshape((x.shape[0], -1))
+    x = np.divide(x, 255.0)  # normalize pixel value between 0 and 1
+    print('MNIST samples shape : {}'.format(x.shape))
+    return x, y
+
+
+def load_har():
+    data = scio.loadmat('../Data/har/HAR.mat')
+    x = data['X']
+    x = x.astype('float32')
+    y = data['Y'] - 1
+    x = x[:10200]
+    y = y[:10200]
+    y = y.reshape((10200,))
+    print('HHAR samples shape : {}'.format(x.shape))
+    return x, y
 
 
 if __name__ == '__main__':
-    x, y = syn_data_points()
-    plot_points(x, y)
+    x1, y1 = syn_data_points()
+    plot_points(x1, y1)
     plt.title('Plot of 2 dimensional data points')
     plt.savefig("../data_points_2_dim.png")
     plt.close()
-    x_high, _ = to_higher_dimension3(x, y)
+    x_high, y = load_synthetic()
 
     pca = PCA(n_components=2)
     x_pca = pca.fit_transform(x_high)
