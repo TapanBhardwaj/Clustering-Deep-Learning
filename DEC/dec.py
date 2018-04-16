@@ -3,21 +3,19 @@ import csv
 import os
 from time import time
 
-import keras.backend as K
 import numpy as np
 import scipy.io as scio
 from keras.datasets import mnist
-from keras.engine.topology import Layer, InputSpec
 from keras.layers import Dense, Input
 from keras.models import Model
 from keras.optimizers import SGD
 from keras.utils import plot_model
 from sklearn import metrics
 from sklearn.cluster import KMeans
-from sklearn.utils.linear_assignment_ import linear_assignment
 
 from Data.pre_training import pre_train
 from Data.synthetic_plots import load_synthetic, plot_points
+from utils import target_distribution, ClusteringLayer, cluster_accuracy, get_acc_nmi_ari
 
 # hyper parameters
 N_CLUSTERS = 10
@@ -49,17 +47,6 @@ def load_har():
     y = y.reshape((10200,))
     print('HHAR samples shape : {}'.format(x.shape))
     return x, y
-
-
-def cluster_accuracy(y_true, y_pred):
-    y_true = y_true.astype(np.int64)
-    assert y_pred.size == y_true.size
-    D = max(y_pred.max(), y_true.max()) + 1
-    w = np.zeros((D, D), dtype=np.int64)
-    for i in range(y_pred.size):
-        w[y_pred[i], y_true[i]] += 1
-    ind = linear_assignment(w.max() - w)
-    return sum([w[i, j] for i, j in ind]) * 1.0 / y_pred.size
 
 
 def autoencoder_model(input_dim, act='relu'):
@@ -126,35 +113,6 @@ def autoencoder_model_syn(input_dim, act='relu'):
     return Model(inputs=x, outputs=h)
 
 
-class ClusteringLayer(Layer):
-    def __init__(self, n_clusters, alpha=1.0, **kwargs):
-        super(ClusteringLayer, self).__init__(**kwargs)
-        self.n_clusters = n_clusters
-        self.alpha = alpha
-        self.input_spec = InputSpec(ndim=2)
-
-    def build(self, input_shape):
-        assert len(input_shape) == 2
-        input_dim = input_shape[1]
-        self.input_spec = InputSpec(dtype=K.floatx(), shape=(None, input_dim))
-        self.clusters = self.add_weight((self.n_clusters, input_dim), initializer='glorot_uniform', name='clusters')
-        self.built = True
-
-    def call(self, inputs, **kwargs):
-        """ student t-distribution
-        Return:
-            q: student's t-distribution, or soft labels for each sample. shape=(n_samples, n_clusters)
-        """
-        q = 1.0 / (1.0 + (K.sum(K.square(K.expand_dims(inputs, axis=1) - self.clusters), axis=2) / self.alpha))
-        q **= (self.alpha + 1.0) / 2.0
-        q = K.transpose(K.transpose(q) / K.sum(q, axis=1))
-        return q
-
-    def compute_output_shape(self, input_shape):
-        assert input_shape and len(input_shape) == 2
-        return input_shape[0], self.n_clusters
-
-
 class DEC(object):
     def __init__(self,
                  input_dim,
@@ -169,12 +127,14 @@ class DEC(object):
         self.alpha = alpha
         if data_set == 'synthetic':
             self.autoencoder = autoencoder_model_syn(self.input_dim)
+            plot_model(self.autoencoder, to_file='../auto_encoder_' + args.dataset + '.png', show_shapes=True)
         else:
             self.autoencoder = autoencoder_model(self.input_dim)
+            plot_model(self.autoencoder, to_file='../auto_encoder_' + args.dataset + '.png', show_shapes=True)
 
         self.data_set = data_set
 
-    def initialize_model(self, optimizer, ae_weights=None):
+    def initialize(self, optimizer, ae_weights=None):
         # load pretrained weights of autoencoder
         self.autoencoder.load_weights(ae_weights)
         print('Pretrained AE weights are loaded successfully from {}'.format(ae_weights))
@@ -191,20 +151,12 @@ class DEC(object):
         self.model = Model(inputs=self.autoencoder.input, outputs=[clustering_layer])
         self.model.compile(loss='kld', optimizer=optimizer)
 
-    def load_weights(self, weights_path):  # load weights of DEC model
-        self.model.load_weights(weights_path)
-
     def extract_feature(self, x):  # extract features from before clustering layer
         if self.data_set == 'synthetic':
             encoder = Model(self.model.input, self.model.get_layer('encoder_2').output)
         else:
             encoder = Model(self.model.input, self.model.get_layer('encoder_3').output)
         return encoder.predict(x)
-
-    @staticmethod
-    def target_distribution(q):
-        weight = q ** 2 / q.sum(0)
-        return (weight.T / weight.sum(1)).T
 
     def clustering(self, x, y=None,
                    update_interval=100,
@@ -217,34 +169,32 @@ class DEC(object):
 
         # initialize cluster centers using k-means
         print('Initializing cluster centers with k-means.')
-        kmeans = KMeans(n_clusters=self.n_clusters, n_init=20, random_state=42)
-        y_pred = kmeans.fit_predict(self.encoder.predict(x))
-        self.model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
+        k_means = KMeans(n_clusters=self.n_clusters, n_init=20, random_state=42)
+        y_pred = k_means.fit_predict(self.encoder.predict(x))
+        self.model.get_layer(name='clustering').set_weights([k_means.cluster_centers_])
 
         # logging file
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-        logfile = open(save_dir + '/dec_log.csv', 'w')
-        logwriter = csv.DictWriter(logfile, fieldnames=['iter', 'acc', 'nmi', 'ari', 'L'])
-        logwriter.writeheader()
+        log_file = open(save_dir + '/dec_log.csv', 'w')
+        log_writer = csv.DictWriter(log_file, fieldnames=['iter', 'acc', 'nmi', 'ari', 'L'])
+        log_writer.writeheader()
 
         loss = 0
         for ite in range(int(maxiter)):
             if ite % update_interval == 0:
                 q = self.model.predict(x, verbose=0)
-                p = self.target_distribution(q)  # update the auxiliary target distribution p
+                p = target_distribution(q)  # update the auxiliary target distribution p
 
                 # evaluate the clustering performance
                 y_pred = q.argmax(1)
-                if y is not None:
-                    acc = np.round(cluster_accuracy(y, y_pred), 5)
-                    nmi = np.round(metrics.normalized_mutual_info_score(y, y_pred), 5)
-                    ari = np.round(metrics.adjusted_rand_score(y, y_pred), 5)
-                    loss = np.round(loss, 5)
-                    logdict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss)
-                    logwriter.writerow(logdict)
-                    print('Iter', ite, ': Acc', acc, ', nmi', nmi, ', ari', ari, '; loss=', loss)
+
+                acc, nmi, ari = get_acc_nmi_ari(y, y_pred)
+                loss = np.round(loss, 5)
+                log_dict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss)
+                log_writer.writerow(log_dict)
+                print('Iter', ite, ': Acc', acc, ', nmi', nmi, ', ari', ari, '; loss=', loss)
 
             # training on whole data
             loss = self.model.train_on_batch(x=x,
@@ -259,7 +209,7 @@ class DEC(object):
             ite += 1
 
         # save the trained model
-        logfile.close()
+        log_file.close()
         print('saving model to:', save_dir + '/DEC_model_final.h5')
         self.model.save(save_dir + '/DEC_model_final.h5')
 
@@ -296,18 +246,18 @@ if __name__ == "__main__":
         pre_train(x, args.dataset, x.shape[-1], args.ae_weights)
 
     # initializing with auto_encoder with pre_training weights
-    dec.initialize_model(optimizer=optimizer,
-                         ae_weights=args.ae_weights)
+    dec.initialize(optimizer=optimizer,
+                   ae_weights=args.ae_weights)
 
     # plotting model description
     plot_model(dec.model, to_file='../dec_model_' + args.dataset + '.png', show_shapes=True)
     dec.model.summary()
     t0 = time()
-    final_weights_dir = FINAL_WEIGHT_DIR + '/' + args.dataset + '1'
+    final_weights_dir = FINAL_WEIGHT_DIR + '/' + args.dataset
 
     # if training is already done , initialize the model from saved weights
     if os.path.isfile(final_weights_dir + '/DEC_model_final.h5'):
-        dec.load_weights(final_weights_dir + '/DEC_model_final.h5')
+        dec.model.load_weights(final_weights_dir + '/DEC_model_final.h5')
         kmeans = KMeans(n_clusters=dec.n_clusters, n_init=20, random_state=42)
         y_pred = kmeans.fit_predict(dec.encoder.predict(x))
 

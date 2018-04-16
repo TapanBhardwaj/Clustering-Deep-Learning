@@ -7,12 +7,12 @@ import numpy as np
 from keras.models import Model
 from keras.optimizers import SGD
 from keras.utils import plot_model
-from sklearn import metrics
 from sklearn.cluster import KMeans
 
-from DEC.dec import autoencoder_model, ClusteringLayer, cluster_accuracy, plot_points
+from DEC.dec import autoencoder_model, cluster_accuracy, plot_points
 from DEC.dec import load_synthetic, load_mnist, load_har, autoencoder_model_syn
 from Data.pre_training import pre_train
+from utils import target_distribution, ClusteringLayer, get_acc_nmi_ari
 
 # hyper parameters
 N_CLUSTERS = 10
@@ -38,7 +38,7 @@ class IDEC(object):
         else:
             self.autoencoder = autoencoder_model(self.input_dim)
 
-    def initialize_model(self, ae_weights=None, gamma=0.1, optimizer='adam'):
+    def initialize(self, ae_weights=None, gamma=0.1, optimizer='adam'):
         # load pretrained weights of autoencoder
         self.autoencoder.load_weights(ae_weights)
         print('Pretrained AE weights are loaded successfully from {}'.format(ae_weights))
@@ -58,14 +58,6 @@ class IDEC(object):
                            loss_weights=[gamma, 1],
                            optimizer=optimizer)
 
-    def load_weights(self, weights_path):  # load weights of DEC model
-        self.model.load_weights(weights_path)
-
-    @staticmethod
-    def target_distribution(q):
-        weight = q ** 2 / q.sum(0)
-        return (weight.T / weight.sum(1)).T
-
     def extract_feature(self, x):  # extract features from before clustering layer
         if self.data_set == 'synthetic':
             encoder = Model(self.model.input, self.model.get_layer('encoder_2').output)
@@ -84,32 +76,30 @@ class IDEC(object):
 
         # initialize cluster centers using k-means
         print('Initializing cluster centers with k-means.')
-        kmeans = KMeans(n_clusters=self.n_clusters, n_init=20)
-        y_pred = kmeans.fit_predict(self.encoder.predict(x))
-        self.model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
+        k_means = KMeans(n_clusters=self.n_clusters, n_init=20)
+        y_pred = k_means.fit_predict(self.encoder.predict(x))
+        self.model.get_layer(name='clustering').set_weights([k_means.cluster_centers_])
 
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        logfile = open(save_dir + '/idec_log.csv', 'w')
-        logwriter = csv.DictWriter(logfile, fieldnames=['iter', 'acc', 'nmi', 'ari', 'L', 'Lc', 'Lr'])
-        logwriter.writeheader()
+        log_file = open(save_dir + '/idec_log.csv', 'w')
+        log_writer = csv.DictWriter(log_file, fieldnames=['iter', 'acc', 'nmi', 'ari', 'L', 'Lc', 'Lr'])
+        log_writer.writeheader()
 
         loss = [0, 0, 0]
         for ite in range(int(maxiter)):
             if ite % update_interval == 0:
                 q, _ = self.model.predict(x, verbose=0)
-                p = self.target_distribution(q)  # update the auxiliary target distribution p
+                p = target_distribution(q)  # update the auxiliary target distribution p
 
                 # evaluate the clustering performance
                 y_pred = q.argmax(1)
-                if y is not None:
-                    acc = np.round(cluster_accuracy(y, y_pred), 5)
-                    nmi = np.round(metrics.normalized_mutual_info_score(y, y_pred), 5)
-                    ari = np.round(metrics.adjusted_rand_score(y, y_pred), 5)
-                    loss = np.round(loss, 5)
-                    logdict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss[0], Lc=loss[1], Lr=loss[2])
-                    logwriter.writerow(logdict)
-                    print('Iter', ite, ': Acc', acc, ', nmi', nmi, ', ari', ari, '; loss=', loss)
+
+                acc, nmi, ari = get_acc_nmi_ari(y, y_pred)
+                loss = np.round(loss, 5)
+                log_dict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss[0], Lc=loss[1], Lr=loss[2])
+                log_writer.writerow(log_dict)
+                print('Iter', ite, ': Acc', acc, ', nmi', nmi, ', ari', ari, '; loss=', loss)
 
             # training on whole data
             loss = self.model.train_on_batch(x=x,
@@ -124,7 +114,7 @@ class IDEC(object):
             ite += 1
 
         # save the trained model
-        logfile.close()
+        log_file.close()
         print('saving model to:', save_dir + '/IDEC_model_final.h5')
         self.model.save_weights(save_dir + '/IDEC_model_final.h5')
 
@@ -161,8 +151,8 @@ if __name__ == "__main__":
         pre_train(x, args.dataset, x.shape[-1], args.ae_weights)
 
     # initializing with auto_encoder with pre_training weights
-    idec.initialize_model(optimizer=optimizer,
-                          ae_weights=args.ae_weights)
+    idec.initialize(optimizer=optimizer,
+                    ae_weights=args.ae_weights)
 
     # plotting model description
     plot_model(idec.model, to_file='../idec_model_' + args.dataset + '.png', show_shapes=True)
@@ -172,9 +162,10 @@ if __name__ == "__main__":
 
     # if training is already done , initialize the model from saved weights
     if os.path.isfile(final_weights_dir + '/IDEC_model_final.h5'):
-        idec.load_weights(final_weights_dir + '/IDEC_model_final.h5')
-        kmeans = KMeans(n_clusters=idec.n_clusters, n_init=20, random_state=42)
-        y_pred = kmeans.fit_predict(idec.encoder.predict(x))
+        idec.model.load_weights(final_weights_dir + '/IDEC_model_final.h5')
+
+        k_means = KMeans(n_clusters=idec.n_clusters, n_init=20, random_state=42)
+        y_pred = k_means.fit_predict(idec.encoder.predict(x))
 
         if args.dataset == 'synthetic':
             intermediate_output = idec.extract_feature(x)
